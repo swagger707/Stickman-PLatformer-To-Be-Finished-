@@ -2,17 +2,215 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stickman Platformer</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Ghost Ninja: Hollow Temple</title>
+    <style>
+        body { margin: 0; background: #0a0a0c; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: 'Courier New', monospace; }
+        canvas { border: 2px solid #333; background: radial-gradient(circle, #1e272e 0%, #0a0a0c 100%); box-shadow: 0 0 50px rgba(0,0,0,0.8); }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <canvas id="gameCanvas" width="900" height="500"></canvas>
-    </div>
-    <script src="js/level.js"></script>
-    <script src="js/platform.js"></script>
-    <script src="js/player.js"></script>
-    <script src="js/game.js"></script>
+    <div style="position: absolute; top: 15px; color: #7f8c8d; letter-spacing: 2px;">WASD to Move | SPACE to Attack</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 800; canvas.height = 600;
+
+        const keys = {};
+        let scrollOffset = 0;
+        let gameActive = true;
+        let frameCount = 0;
+        const winPoint = 4000;
+
+        // --- ENTITY CLASSES ---
+        class Platform {
+            constructor(x, y, width, height) { this.x = x; this.y = y; this.width = width; this.height = height; }
+            draw() {
+                ctx.fillStyle = '#2c3e50'; 
+                ctx.fillRect(this.x - scrollOffset, this.y, this.width, this.height);
+                ctx.fillStyle = '#16a085'; // Dark teal moss
+                ctx.fillRect(this.x - scrollOffset, this.y, this.width, 8);
+            }
+        }
+
+        class Enemy {
+            constructor(x, y, type = 'crawler') {
+                this.x = x; this.y = y;
+                this.initialX = x;
+                this.width = type === 'boss' ? 80 : 35;
+                this.height = type === 'boss' ? 100 : 40;
+                this.type = type;
+                this.health = type === 'boss' ? 15 : 1;
+                this.speed = type === 'boss' ? 1.5 : 2;
+                this.dir = 1;
+            }
+            update() {
+                this.x += this.speed * this.dir;
+                if (Math.abs(this.x - this.initialX) > 150) this.dir *= -1;
+            }
+            draw() {
+                const x = this.x - scrollOffset;
+                const y = this.y;
+                
+                // Hollow Knight Style: Dark Cloaks, White Masks
+                ctx.fillStyle = '#2d3436'; // Dark Cloak
+                if (this.type === 'boss') {
+                    // Boss Body
+                    ctx.beginPath();
+                    ctx.ellipse(x + 40, y + 60, 40, 50, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Boss Mask
+                    ctx.fillStyle = '#ecf0f1';
+                    ctx.beginPath();
+                    ctx.arc(x + 40, y + 30, 35, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Glowing Void Eyes
+                    ctx.fillStyle = 'black';
+                    ctx.beginPath(); ctx.ellipse(x + 25, y + 30, 8, 12, 0, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.ellipse(x + 55, y + 30, 8, 12, 0, 0, Math.PI*2); ctx.fill();
+                    // HP Bar
+                    ctx.fillStyle = '#c0392b';
+                    ctx.fillRect(x, y - 20, (this.health / 15) * 80, 6);
+                } else {
+                    // Minion Body
+                    ctx.beginPath(); ctx.arc(x + 17, y + 25, 17, 0, Math.PI*2); ctx.fill();
+                    // Minion Mask
+                    ctx.fillStyle = '#ecf0f1';
+                    ctx.beginPath(); ctx.arc(x + 17, y + 15, 15, 0, Math.PI*2); ctx.fill();
+                    // Eyes
+                    ctx.fillStyle = 'black';
+                    ctx.beginPath(); ctx.circle = ctx.arc(x + 10, y + 15, 3, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.circle = ctx.arc(x + 24, y + 15, 3, 0, Math.PI*2); ctx.fill();
+                }
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, dir) { this.x = x; this.y = y; this.speed = 12 * dir; this.active = true; }
+            update() { this.x += this.speed; }
+            draw() {
+                ctx.fillStyle = '#ecf0f1';
+                ctx.shadowBlur = 10; ctx.shadowColor = 'cyan';
+                ctx.fillRect(this.x - scrollOffset, this.y, 15, 3);
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // --- INITIALIZE WORLD ---
+        const platforms = [
+            new Platform(0, 500, 800, 100),
+            new Platform(950, 400, 300, 30),
+            new Platform(1400, 500, 800, 100),
+            new Platform(2300, 350, 400, 30),
+            new Platform(2800, 500, 1800, 100)
+        ];
+
+        const enemies = [
+            new Enemy(1100, 360), new Enemy(1500, 460), new Enemy(1900, 460),
+            new Enemy(2400, 310), new Enemy(3600, 400, 'boss')
+        ];
+
+        const projectiles = [];
+
+        class Player {
+            constructor() { this.reset(); this.width = 25; this.height = 50; }
+            reset() { this.pos = { x: 100, y: 300 }; this.vel = { x: 0, y: 0 }; this.facing = 1; this.grounded = false; }
+            draw() {
+                const x = this.pos.x; const y = this.pos.y;
+                // Cloak
+                ctx.fillStyle = '#2f3640';
+                ctx.beginPath(); ctx.moveTo(x, y+50); ctx.lineTo(x+12, y+15); ctx.lineTo(x+25, y+50); ctx.fill();
+                // Mask
+                ctx.fillStyle = '#f5f6fa';
+                ctx.beginPath(); ctx.arc(x+12, y+12, 12, 0, Math.PI*2); ctx.fill();
+                // Void Eyes
+                ctx.fillStyle = '#000';
+                ctx.beginPath(); ctx.ellipse(x+7, y+12, 3, 5, 0, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.ellipse(x+17, y+12, 3, 5, 0, 0, Math.PI*2); ctx.fill();
+                // Red Ribbon
+                ctx.fillStyle = '#c0392b'; ctx.fillRect(x+2, y+2, 20, 4);
+            }
+            update() {
+                if (keys.ArrowRight || keys.d) { this.vel.x = 6; this.facing = 1; }
+                else if (keys.ArrowLeft || keys.a) { this.vel.x = -6; this.facing = -1; }
+                else this.vel.x = 0;
+
+                this.vel.y += 0.7; // Gravity
+                this.pos.x += this.vel.x; this.pos.y += this.vel.y;
+
+                this.grounded = false;
+                platforms.forEach(p => {
+                    if (this.pos.y + this.height <= p.y + this.vel.y + 1 && 
+                        this.pos.y + this.height + this.vel.y >= p.y &&
+                        this.pos.x + this.width >= p.x - scrollOffset &&
+                        this.pos.x <= p.x - scrollOffset + p.width) {
+                        this.vel.y = 0; this.pos.y = p.y - this.height; this.grounded = true;
+                    }
+                });
+                // JUMP: Only on specific keys, removed Space
+                if (this.grounded && (keys.w || keys.ArrowUp || keys.k)) {
+                    this.vel.y = -16;
+                }
+            }
+        }
+
+        const player = new Player();
+
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            // SHOOT: Space or J
+            if (e.key === ' ' || e.key === 'j') {
+                projectiles.push(new Projectile(player.pos.x + scrollOffset + 12, player.pos.y + 20, player.facing));
+            }
+        });
+        window.addEventListener('keyup', (e) => keys[e.key] = false);
+
+        function animate() {
+            if (!gameActive) return;
+            frameCount++;
+            requestAnimationFrame(animate);
+            ctx.clearRect(0,0,canvas.width, canvas.height);
+
+            // Camera
+            if (player.pos.x > 400 && scrollOffset < winPoint) {
+                scrollOffset += player.vel.x; player.pos.x = 400; 
+            }
+
+            platforms.forEach(p => p.draw());
+
+            projectiles.forEach((proj, pi) => {
+                proj.update(); proj.draw();
+                enemies.forEach((en, ei) => {
+                    if (proj.x > en.x && proj.x < en.x + en.width && proj.y > en.y && proj.y < en.y + en.height) {
+                        en.health--;
+                        proj.active = false;
+                        if (en.health <= 0) enemies.splice(ei, 1);
+                    }
+                });
+                if (proj.active === false || Math.abs(proj.x - (player.pos.x + scrollOffset)) > 800) projectiles.splice(pi, 1);
+            });
+
+            enemies.forEach(en => {
+                en.update(); en.draw();
+                if (player.pos.x + player.width > en.x - scrollOffset && 
+                    player.pos.x < en.x - scrollOffset + en.width &&
+                    player.pos.y + player.height > en.y) {
+                    player.reset(); scrollOffset = 0;
+                }
+            });
+
+            player.update();
+            player.draw();
+
+            if (enemies.filter(e => e.type === 'boss').length === 0 && scrollOffset > 3200) {
+                ctx.fillStyle = 'white'; ctx.font = '40px Courier New'; ctx.textAlign = 'center';
+                ctx.fillText("VOID CONQUERED", canvas.width/2, canvas.height/2);
+                gameActive = false;
+            }
+            if (player.pos.y > canvas.height) { player.reset(); scrollOffset = 0; }
+        }
+        animate();
+    </script>
 </body>
 </html>
